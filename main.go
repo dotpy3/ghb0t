@@ -107,6 +107,7 @@ func main() {
 	for range ticker.C {
 		page := 1
 		perPage := 20
+		logrus.Debug("Getting last notifications...")
 		if err := getNotifications(client, username, page, perPage); err != nil {
 			logrus.Warn(err)
 		}
@@ -145,12 +146,14 @@ func getNotifications(client *github.Client, username string, page, perPage int)
 	}
 
 	page = resp.NextPage
+	logrus.Debug("Getting next page of notifications...")
 	return getNotifications(client, username, page, perPage)
 }
 
 func handleNotification(client *github.Client, notification *github.Notification, username string) error {
 	// Check if the type is a pull request.
 	if *notification.Subject.Type == "PullRequest" {
+		logrus.Debug("Pull request notification found")
 		// Let's get some information about the pull request.
 		parts := strings.Split(*notification.Subject.URL, "/")
 		last := parts[len(parts)-1]
@@ -165,18 +168,47 @@ func handleNotification(client *github.Client, notification *github.Notification
 		}
 
 		if *pr.State == "closed" && *pr.Merged {
+			logrus.Debug("Merged pull request notification found")
 			// If the PR was made from a repository owned by the current user,
 			// let's delete it.
 			branch := *pr.Head.Ref
-			if pr.Head.Repo == nil {
-				return nil
+
+			var owner string
+			if pr.Head.Repo.Organization != nil {
+				org := *pr.Head.Repo.Organization
+
+				if org.Login == nil {
+					logrus.Debug("Organization has no login")
+					return nil
+				}
+				owner = *org.Login
+
+				membership, _, err := client.Organizations.GetOrgMembership(username, owner)
+				if err != nil {
+					logrus.Debug("Could not get user membership")
+					return err
+				}
+				if membership.State == nil || *membership.State != "active" {
+					// User is not a member of the organization => can't delete the branch
+					logrus.Debug("User is not an active member")
+					return nil
+				}
+				logrus.Debug("Branch to delete on an organization repo found")
+			} else if pr.Head.Repo.Owner != nil {
+				if pr.Head.Repo == nil {
+					return nil
+				}
+
+				owner = *pr.Head.Repo.Owner.Login
+				// Never delete a branch we do not own.
+				if owner != username {
+					return nil
+				}
+				logrus.Debug("Branch to delete on a personal repo found")
 			}
-			if pr.Head.Repo.Owner == nil {
-				return nil
-			}
-			owner := *pr.Head.Repo.Owner.Login
-			// Never delete the master branch or a branch we do not own.
-			if owner == username && branch != "master" {
+
+			// Never delete the master branch
+			if branch != "master" {
 				_, err := client.Git.DeleteRef(username, *pr.Head.Repo.Name, strings.Replace("heads/"+*pr.Head.Ref, "#", "%23", -1))
 				// 422 is the error code for when the branch does not exist.
 				if err != nil && !strings.Contains(err.Error(), " 422 ") {
