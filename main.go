@@ -168,10 +168,10 @@ func handleNotification(client *github.Client, notification *github.Notification
 		}
 
 		if *pr.State == "closed" && *pr.Merged {
-			logrus.Debug("Merged pull request notification found")
+			branch := *pr.Head.Ref
+			logrus.Debugf("Merged pull request from branch %s notification found", branch)
 			// If the PR was made from a repository owned by the current user,
 			// let's delete it.
-			branch := *pr.Head.Ref
 
 			var owner string
 			if pr.Head.Repo.Organization != nil {
@@ -195,13 +195,15 @@ func handleNotification(client *github.Client, notification *github.Notification
 				}
 				logrus.Debug("Branch to delete on an organization repo found")
 			} else if pr.Head.Repo.Owner != nil {
-				if pr.Head.Repo == nil {
+				if pr.Head.Repo.Owner.Login == nil {
+					logrus.Debug("GitHub API did not provide owner login")
 					return nil
 				}
 
 				owner = *pr.Head.Repo.Owner.Login
 				// Never delete a branch we do not own.
 				if owner != username {
+					logrus.Debug("Branch to delete was not owned by the user, but by %s", owner)
 					return nil
 				}
 				logrus.Debug("Branch to delete on a personal repo found")
@@ -212,6 +214,7 @@ func handleNotification(client *github.Client, notification *github.Notification
 				_, err := client.Git.DeleteRef(username, *pr.Head.Repo.Name, strings.Replace("heads/"+*pr.Head.Ref, "#", "%23", -1))
 				// 422 is the error code for when the branch does not exist.
 				if err != nil && !strings.Contains(err.Error(), " 422 ") {
+					logrus.WithError(err).Debugf("Could not delete branch %s/%s", owner, *pr.Head.Repo.Name)
 					return err
 				}
 				logrus.Infof("Branch %s on %s/%s no longer exists.", branch, owner, *pr.Head.Repo.Name)
